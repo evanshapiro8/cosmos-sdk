@@ -4,10 +4,12 @@
 
 * 2023-01-17: Initial Draft (@alexanderbez)
 * 2023-04-06: Add upgrading section (@alexanderbez)
+* 2023-04-10: Simplify vote extension state persistence (@alexanderbez)
+* 2023-07-07: Revise vote extension state persistence (@alexanderbez)
 
 ## Status
 
-PROPOSED
+ACCEPTED
 
 ## Abstract
 
@@ -104,10 +106,11 @@ type ExtendVoteHandler func(sdk.Context, abci.RequestExtendVote) abci.ResponseEx
 type VerifyVoteExtensionHandler func(sdk.Context, abci.RequestVerifyVoteExtension) abci.ResponseVerifyVoteExtension
 ```
 
-A new execution state, `voteExtensionState`, will be introduced and provided as
-the `Context` that is supplied to both handlers. It will contain relevant metadata
-such as the block height and block hash. Note, `voteExtensionState` is never
-committed and will exist as ephemeral state only in the context of a single block.
+An ephemeral context and state will be supplied to both handlers. The
+context will contain relevant metadata such as the block height and block hash.
+The state will be a cached version of the committed state of the application and
+will be discarded after the execution of the handler, this means that both handlers
+get a fresh state view and no changes made to it will be written.
 
 If an application decides to implement `ExtendVoteHandler`, it must return a
 non-nil `ResponseExtendVote.VoteExtension`.
@@ -216,7 +219,8 @@ a default signature verification method which applications can use:
 
 ```go
 type ValidatorStore interface {
-	GetValidatorByConsAddr(sdk.Context, cryptotypes.Address) (cryptotypes.PubKey, error)
+	TotalBondedTokens(ctx context.Context) (math.Int, error)
+	BondedTokensAndPubKeyByConsAddr(context.Context, sdk.ConsAddress) (math.Int, cmtprotocrypto.PublicKey, error)
 }
 
 // ValidateVoteExtensions is a function that an application can execute in
@@ -227,16 +231,10 @@ func (app *BaseApp) ValidateVoteExtensions(ctx sdk.Context, currentHeight int64,
 			continue
 		}
 
-		valConsAddr := cmtcrypto.Address(vote.Validator.Address)
-
-		validator, err := app.validatorStore.GetValidatorByConsAddr(ctx, valConsAddr)
+		valConsAddr := sdk.ConsAddress(vote.Validator.Address)
+		bondedTokens, cmtPubKey, err := valStore.BondedTokensAndPubKeyByConsAddr(ctx, valConsAddr)
 		if err != nil {
-			return fmt.Errorf("failed to get validator %s for vote extension", valConsAddr)
-		}
-
-		cmtPubKey, err := validator.CmtConsPublicKey()
-		if err != nil {
-			return fmt.Errorf("failed to convert public key: %w", err)
+			return fmt.Errorf("failed to get bonded tokens and public key for validator %s: %w", valConsAddr, err)
 		}
 
 		if len(vote.ExtensionSignature) == 0 {
@@ -277,48 +275,23 @@ decision based on the vote extensions.
 
 #### Vote Extension Persistence
 
-In order to make any data derived from vote extensions persistent, we propose to
-allow application developers to "merge" the `processProposalState` into the
-`finalizeState`, such that when processing transactions during `FinalizeBlock`,
-the base state includes any state changes from processing votes extensions
-(see [`FinalizeBlock`](#finalizeblock-1) below).
+In certain contexts, it may be useful or necessary for applications to persist
+data derived from vote extensions. In order to facilitate this use case, we propose
+to allow app developers to define a pre-FinalizeBlock hook which will be called
+at the very beginning of `FinalizeBlock`, i.e. before `BeginBlock` (see below).
 
-However, we DO NOT want to pollute `finalizeState` with any state changes from
-verifying transactions during `ProcessProposal`, so we will introduce a new API,
-`ResetProcessProposalState`, that will allow applications to essentially reset
-the `ProcessProposal` state, effectively allowing any state transitions after to
-be committed.
-
-What this means is that any explicit state changes in a `ProcessProposal` handler
-using the injected `processProposalState.Context` will be written to state! An
-application must be careful to execute `ResetProcessProposalState` where and when
-appropriate.
-
-A `ProcessProposal` handler could look like the following:
+Note, we cannot allow applications to directly write to the application state
+during `ProcessProposal` because during replay, CometBFT will NOT call `ProcessProposal`,
+which would result in an incomplete state view.
 
 ```go
-func (h MyHandler) ProcessProposalHandler() sdk.ProcessProposalHandler {
-	return func(ctx sdk.Context, req abci.RequestProcessProposal) abci.ResponseProcessProposal {
-		for _, txBytes := range req.Txs {
-			_, err := h.app.ProcessProposalVerifyTx(txBytes)
-			if err != nil {
-				return abci.ResponseProcessProposal{Status: abci.ResponseProcessProposal_REJECT}
-			}
-		}
-
-		// Reset the ProposalProposal state, which, up to this point, has accumulated
-		// possible state transitions from transaction verification and processing.
-		// Any subsequent state transitions after this will be merged into the
-		// FinalizeState before processing Begin/EndBlock and transactions.
-		// 
-		// NOTE: Applications must call this to ensure no state transactions up to now
-		// are committed!
-		h.app.ResetProcessProposalState()
-
-		// Any state changes that occur on the provided ctx WILL be written to state!
-		h.myKeeper.SetVoteExtResult(ctx, ...)
+func (a MyApp) PreFinalizeBlockHook(ctx sdk.Context, req.RequestFinalizeBlock) error {
+	voteExts := GetVoteExtensions(ctx, req.Txs)
 	
-		return abci.ResponseProcessProposal{Status: abci.ResponseProcessProposal_ACCEPT}
+	// Process and perform some compute on vote extensions, storing any resulting
+	// state.
+	if err a.processVoteExtensions(ctx, voteExts); if err != nil {
+		return err
 	}
 }
 ```
@@ -361,9 +334,14 @@ legacy ABCI types, e.g. `LegacyBeginBlockRequest` and `LegacyEndBlockRequest`. O
 we can come up with new types and names altogether.
 
 ```go
-func (app *BaseApp) FinalizeBlock(req abci.RequestFinalizeBlock) abci.ResponseFinalizeBlock {
-	// merge any state changes from ProcessProposal into the FinalizeBlock state
-	app.MergeProcessProposalState()
+func (app *BaseApp) FinalizeBlock(req abci.RequestFinalizeBlock) (*abci.ResponseFinalizeBlock, error) {
+	ctx := ...
+
+	if app.preFinalizeBlockHook != nil {
+		if err := app.preFinalizeBlockHook(ctx, req); err != nil {
+			return nil, err
+		}
+	}
 
 	beginBlockResp := app.beginBlock(ctx, req)
 	appendBlockEventAttr(beginBlockResp.Events, "begin_block")

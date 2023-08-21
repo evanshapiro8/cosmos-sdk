@@ -2,16 +2,18 @@ package textual
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
 
-	"cosmossdk.io/math"
 	"google.golang.org/protobuf/reflect/protoreflect"
+
+	"cosmossdk.io/math"
 )
 
 // NewIntValueRenderer returns a ValueRenderer for uint32, uint64, int32 and
-// int64, and sdk.Int scalars.
+// int64, and math.Int scalars.
 func NewIntValueRenderer(fd protoreflect.FieldDescriptor) ValueRenderer {
 	return intValueRenderer{fd}
 }
@@ -19,8 +21,6 @@ func NewIntValueRenderer(fd protoreflect.FieldDescriptor) ValueRenderer {
 type intValueRenderer struct {
 	fd protoreflect.FieldDescriptor
 }
-
-var _ ValueRenderer = intValueRenderer{}
 
 func (vr intValueRenderer) Format(_ context.Context, v protoreflect.Value) ([]Screen, error) {
 	formatted, err := math.FormatInt(v.String())
@@ -79,6 +79,10 @@ func (vr intValueRenderer) Parse(_ context.Context, screens []Screen) (protorefl
 
 // parseInt parses a value-rendered string into an integer
 func parseInt(v string) (string, error) {
+	if len(v) == 0 {
+		return "", errors.New("expecting a non-empty string")
+	}
+
 	sign := ""
 	if v[0] == '-' {
 		sign = "-"

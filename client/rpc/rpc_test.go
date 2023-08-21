@@ -11,10 +11,9 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/metadata"
 
-	"github.com/cosmos/cosmos-sdk/client/rpc"
-	clitestutil "github.com/cosmos/cosmos-sdk/testutil/cli"
 	"github.com/cosmos/cosmos-sdk/testutil/network"
 	"github.com/cosmos/cosmos-sdk/testutil/testdata"
+	"github.com/cosmos/cosmos-sdk/types/address"
 	grpctypes "github.com/cosmos/cosmos-sdk/types/grpc"
 	banktypes "github.com/cosmos/cosmos-sdk/x/bank/types"
 )
@@ -26,7 +25,6 @@ type IntegrationTestSuite struct {
 }
 
 func (s *IntegrationTestSuite) SetupSuite() {
-	s.T().Skip("disable till comet fixes data races")
 	s.T().Log("setting up integration test suite")
 
 	cfg, err := network.DefaultConfigWithAppConfig(network.MinimumAppConfig())
@@ -42,18 +40,6 @@ func (s *IntegrationTestSuite) SetupSuite() {
 func (s *IntegrationTestSuite) TearDownSuite() {
 	s.T().Log("tearing down integration test suite")
 	s.network.Cleanup()
-}
-
-func (s *IntegrationTestSuite) TestStatusCommand() {
-	s.T().Skip("data race in comet is causing this to fail")
-	val0 := s.network.Validators[0]
-	cmd := rpc.StatusCommand()
-
-	out, err := clitestutil.ExecTestCLICmd(val0.ClientCtx, cmd, []string{})
-	s.Require().NoError(err)
-
-	// Make sure the output has the validator moniker.
-	s.Require().Contains(out.String(), fmt.Sprintf("\"moniker\":\"%s\"", val0.Moniker))
 }
 
 func (s *IntegrationTestSuite) TestCLIQueryConn() {
@@ -73,7 +59,6 @@ func (s *IntegrationTestSuite) TestCLIQueryConn() {
 }
 
 func (s *IntegrationTestSuite) TestQueryABCIHeight() {
-	s.T().Skip("data race in comet is causing this to fail")
 	testCases := []struct {
 		name      string
 		reqHeight int64
@@ -102,7 +87,8 @@ func (s *IntegrationTestSuite) TestQueryABCIHeight() {
 
 	for _, tc := range testCases {
 		s.Run(tc.name, func() {
-			s.network.WaitForHeight(tc.expHeight)
+			_, err := s.network.WaitForHeight(tc.expHeight)
+			s.Require().NoError(err)
 
 			val := s.network.Validators[0]
 
@@ -112,7 +98,7 @@ func (s *IntegrationTestSuite) TestQueryABCIHeight() {
 			req := abci.RequestQuery{
 				Path:   fmt.Sprintf("store/%s/key", banktypes.StoreKey),
 				Height: tc.reqHeight,
-				Data:   banktypes.CreateAccountBalancesPrefix(val.Address),
+				Data:   address.MustLengthPrefix(val.Address),
 				Prove:  true,
 			}
 

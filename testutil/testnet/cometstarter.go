@@ -8,8 +8,6 @@ import (
 	"path/filepath"
 	"syscall"
 
-	"cosmossdk.io/log"
-	abcitypes "github.com/cometbft/cometbft/abci/types"
 	cmtcfg "github.com/cometbft/cometbft/config"
 	cmted25519 "github.com/cometbft/cometbft/crypto/ed25519"
 	"github.com/cometbft/cometbft/node"
@@ -17,7 +15,12 @@ import (
 	"github.com/cometbft/cometbft/privval"
 	"github.com/cometbft/cometbft/proxy"
 	cmttypes "github.com/cometbft/cometbft/types"
+
+	"cosmossdk.io/log"
+
+	"github.com/cosmos/cosmos-sdk/server"
 	servercmtlog "github.com/cosmos/cosmos-sdk/server/log"
+	servertypes "github.com/cosmos/cosmos-sdk/server/types"
 	genutiltypes "github.com/cosmos/cosmos-sdk/x/genutil/types"
 )
 
@@ -27,29 +30,23 @@ import (
 // As CometStart is more broadly used in the codebase,
 // the number of available methods on CometStarter will grow.
 type CometStarter struct {
-	logger log.Logger
-
-	app abcitypes.Application
-
-	cfg        *cmtcfg.Config
-	valPrivKey cmted25519.PrivKey
-	genesis    []byte
-
-	rootDir string
-
-	rpcListen bool
-
+	logger         log.Logger
+	app            servertypes.ABCI
+	cfg            *cmtcfg.Config
+	valPrivKey     cmted25519.PrivKey
+	genesis        []byte
+	rootDir        string
+	rpcListen      bool
 	tcpAddrChooser func() string
-
-	startTries int
+	startTries     int
 }
 
 // NewCometStarter accepts a minimal set of arguments to start comet with an ABCI app.
 // For further configuration, chain other CometStarter methods before calling Start:
 //
-//     NewCometStarter(...).Logger(...).Start()
+//	NewCometStarter(...).Logger(...).Start()
 func NewCometStarter(
-	app abcitypes.Application,
+	app servertypes.ABCI,
 	cfg *cmtcfg.Config,
 	valPrivKey cmted25519.PrivKey,
 	genesis []byte,
@@ -92,16 +89,12 @@ func NewCometStarter(
 	// and bumping it up to 12 makes it almost never fail.
 	const defaultStartTries = 12
 	return &CometStarter{
-		logger: log.NewNopLogger(),
-
-		app: app,
-
+		logger:     log.NewNopLogger(),
+		app:        app,
 		cfg:        cfg,
 		genesis:    genesis,
 		valPrivKey: valPrivKey,
-
-		rootDir: rootDir,
-
+		rootDir:    rootDir,
 		startTries: defaultStartTries,
 	}
 }
@@ -132,8 +125,8 @@ func (s *CometStarter) Start() (n *node.Node, err error) {
 			return nil, err
 		}
 
-		// Wrap this defer in an anonymous function so we don't immediately evaluate n,
-		// which would always be nil at thi spoint.
+		// Wrap this defer in an anonymous function so we don't immediately evaluate
+		// n, which would always be nil at this point.
 		defer func() {
 			globalCometMu.Release(n)
 		}()
@@ -153,6 +146,7 @@ func (s *CometStarter) Start() (n *node.Node, err error) {
 		return appGenesis.ToGenesisDoc()
 	}
 
+	cmtApp := server.NewCometABCIWrapper(s.app)
 	for i := 0; i < s.startTries; i++ {
 		s.cfg.P2P.ListenAddress = s.likelyAvailableAddress()
 		if s.rpcListen {
@@ -163,13 +157,12 @@ func (s *CometStarter) Start() (n *node.Node, err error) {
 			s.cfg,
 			fpv,
 			nodeKey,
-			proxy.NewLocalClientCreator(s.app),
+			proxy.NewLocalClientCreator(cmtApp),
 			appGenesisProvider,
-			node.DefaultDBProvider,
+			cmtcfg.DefaultDBProvider,
 			node.DefaultMetricsProvider(s.cfg.Instrumentation),
-			servercmtlog.CometZeroLogWrapper{Logger: s.logger},
+			servercmtlog.CometLoggerWrapper{Logger: s.logger},
 		)
-
 		if err != nil {
 			return nil, fmt.Errorf("failed to create comet node: %w", err)
 		}
@@ -207,7 +200,7 @@ func (s *CometStarter) initDisk() (cmttypes.PrivValidator, *p2p.NodeKey, error) 
 	fpv := privval.NewFilePV(s.valPrivKey, s.cfg.PrivValidatorKeyFile(), s.cfg.PrivValidatorStateFile())
 	fpv.Save()
 
-	if err := os.WriteFile(s.cfg.GenesisFile(), s.genesis, 0600); err != nil {
+	if err := os.WriteFile(s.cfg.GenesisFile(), s.genesis, 0o600); err != nil {
 		return nil, nil, fmt.Errorf("failed to write genesis file: %w", err)
 	}
 

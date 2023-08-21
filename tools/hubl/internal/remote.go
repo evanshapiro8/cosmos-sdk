@@ -1,6 +1,7 @@
 package internal
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path"
@@ -14,12 +15,17 @@ import (
 
 	"cosmossdk.io/client/v2/autocli"
 	"cosmossdk.io/client/v2/autocli/flag"
+
+	"github.com/cosmos/cosmos-sdk/client/flags"
+	"github.com/cosmos/cosmos-sdk/client/grpc/cmtservice"
+	addresscodec "github.com/cosmos/cosmos-sdk/codec/address"
 )
 
 var (
 	flagInsecure = "insecure"
 	flagUpdate   = "update"
 	flagConfig   = "config"
+	flagLong     = "long"
 )
 
 func RootCommand() (*cobra.Command, error) {
@@ -45,7 +51,11 @@ func RootCommand() (*cobra.Command, error) {
 	if err != nil {
 		return nil, err
 	}
-	commands = append(commands, InitCommand(config, configDir))
+	commands = append(
+		commands,
+		InitCommand(config, configDir),
+		VersionCmd(),
+	)
 
 	cmd.AddCommand(commands...)
 	return cmd, nil
@@ -85,28 +95,35 @@ func RemoteCommand(config *Config, configDir string) ([]*cobra.Command, error) {
 			continue
 		}
 
+		// add comet commands
+		cometCmds := cmtservice.NewCometBFTCommands()
+		chainInfo.ModuleOptions[cometCmds.Name()] = cometCmds.AutoCLIOptions()
+
 		appOpts := autocli.AppOptions{
 			ModuleOptions: chainInfo.ModuleOptions,
 		}
 
 		builder := &autocli.Builder{
 			Builder: flag.Builder{
-				TypeResolver: &dynamicTypeResolver{chainInfo},
-				FileResolver: chainInfo.ProtoFiles,
-				GetClientConn: func() (grpc.ClientConnInterface, error) {
-					return chainInfo.OpenClient()
-				},
+				AddressCodec:          addresscodec.NewBech32Codec(chainConfig.Bech32Prefix),
+				ValidatorAddressCodec: addresscodec.NewBech32Codec(fmt.Sprintf("%svaloper", chainConfig.Bech32Prefix)),
+				ConsensusAddressCodec: addresscodec.NewBech32Codec(fmt.Sprintf("%svalcons", chainConfig.Bech32Prefix)),
+				TypeResolver:          &dynamicTypeResolver{chainInfo},
+				FileResolver:          chainInfo.ProtoFiles,
 			},
 			GetClientConn: func(command *cobra.Command) (grpc.ClientConnInterface, error) {
 				return chainInfo.OpenClient()
 			},
 			AddQueryConnFlags: func(command *cobra.Command) {},
 		}
+
 		var (
 			update   bool
 			reconfig bool
 			insecure bool
+			output   string
 		)
+
 		chainCmd := &cobra.Command{
 			Use:   chain,
 			Short: fmt.Sprintf("Commands for the %s chain", chain),
@@ -125,6 +142,7 @@ func RemoteCommand(config *Config, configDir string) ([]*cobra.Command, error) {
 		chainCmd.Flags().BoolVar(&update, flagUpdate, false, "update the CLI commands for the selected chain (should be used after every chain upgrade)")
 		chainCmd.Flags().BoolVar(&reconfig, flagConfig, false, "re-configure the selected chain (allows choosing a new gRPC endpoint and refreshes data")
 		chainCmd.Flags().BoolVar(&insecure, flagInsecure, false, "allow re-configuring the selected chain using an insecure gRPC connection")
+		chainCmd.PersistentFlags().StringVar(&output, flags.FlagOutput, flags.OutputFormatJSON, "output format (text|json)")
 
 		if err := appOpts.EnhanceRootCommandWithBuilder(chainCmd, builder); err != nil {
 			return nil, err
@@ -177,7 +195,19 @@ func reconfigure(cmd *cobra.Command, config *Config, configDir, chain string) er
 		return err
 	}
 
+	client, err := chainInfo.OpenClient()
+	if err != nil {
+		return err
+	}
+
+	addressPrefix, err := getAddressPrefix(context.Background(), client)
+	if err != nil {
+		return err
+	}
+
+	chainConfig.Bech32Prefix = addressPrefix
 	config.Chains[chain] = chainConfig
+
 	if err := SaveConfig(configDir, config); err != nil {
 		return err
 	}

@@ -32,10 +32,10 @@ func TestContext_PrintProto(t *testing.T) {
 		Size_: "big",
 		Name:  "Spot",
 	}
-	any, err := types.NewAnyWithValue(animal)
+	anyAnimal, err := types.NewAnyWithValue(animal)
 	require.NoError(t, err)
 	hasAnimal := &testdata.HasAnimal{
-		Animal: any,
+		Animal: anyAnimal,
 		X:      10,
 	}
 
@@ -65,52 +65,6 @@ func TestContext_PrintProto(t *testing.T) {
   name: Spot
   size: big
 x: "10"
-`, buf.String())
-}
-
-func TestContext_PrintObjectLegacy(t *testing.T) {
-	ctx := client.Context{}
-
-	animal := &testdata.Dog{
-		Size_: "big",
-		Name:  "Spot",
-	}
-	any, err := types.NewAnyWithValue(animal)
-	require.NoError(t, err)
-	hasAnimal := &testdata.HasAnimal{
-		Animal: any,
-		X:      10,
-	}
-
-	// amino
-	amino := testdata.NewTestAmino()
-	ctx = ctx.WithLegacyAmino(&codec.LegacyAmino{Amino: amino})
-
-	// json
-	buf := &bytes.Buffer{}
-	ctx = ctx.WithOutput(buf)
-	ctx.OutputFormat = flags.OutputFormatJSON
-	err = ctx.PrintObjectLegacy(hasAnimal)
-	require.NoError(t, err)
-	require.Equal(t,
-		`{"type":"testpb/HasAnimal","value":{"animal":{"type":"testpb/Dog","value":{"size":"big","name":"Spot"}},"x":"10"}}
-`, buf.String())
-
-	// yaml
-	buf = &bytes.Buffer{}
-	ctx = ctx.WithOutput(buf)
-	ctx.OutputFormat = flags.OutputFormatText
-	err = ctx.PrintObjectLegacy(hasAnimal)
-	require.NoError(t, err)
-	require.Equal(t,
-		`type: testpb/HasAnimal
-value:
-  animal:
-    type: testpb/Dog
-    value:
-      name: Spot
-      size: big
-  x: "10"
 `, buf.String())
 }
 

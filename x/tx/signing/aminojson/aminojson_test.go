@@ -19,7 +19,7 @@ func TestAminoJsonSignMode(t *testing.T) {
 		Amount: []*basev1beta1.Coin{{Denom: "uatom", Amount: "1000"}},
 	}
 	handlerOptions := testutil.HandlerArgumentOptions{
-		ChainId: "test-chain",
+		ChainID: "test-chain",
 		Memo:    "sometestmemo",
 		Tip:     &txv1beta1.Tip{Tipper: "tipper", Amount: []*basev1beta1.Coin{{Denom: "Tip-token", Amount: "10"}}},
 		Msg: &bankv1beta1.MsgSend{
@@ -106,7 +106,7 @@ func TestAminoJsonSignMode(t *testing.T) {
 func TestNewSignModeHandler(t *testing.T) {
 	handler := aminojson.NewSignModeHandler(aminojson.SignModeHandlerOptions{})
 	require.NotNil(t, handler)
-	aj := aminojson.NewAminoJSON()
+	aj := aminojson.NewEncoder(aminojson.EncoderOptions{})
 	handler = aminojson.NewSignModeHandler(aminojson.SignModeHandlerOptions{
 		FileResolver: protoregistry.GlobalFiles,
 		TypeResolver: protoregistry.GlobalTypes,

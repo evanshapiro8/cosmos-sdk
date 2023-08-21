@@ -90,7 +90,7 @@ const _vendor = "/vendor/"
 
 func splitFuncName(function string) (pname, fname string) {
 	if len(function) == 0 {
-		return
+		return "", ""
 	}
 
 	// We have something like "path.to/my/pkg.MyFunction". If the function is
@@ -121,5 +121,5 @@ func splitFuncName(function string) (pname, fname string) {
 		pname = unescaped
 	}
 
-	return
+	return pname, fname
 }

@@ -4,10 +4,17 @@ import (
 	"fmt"
 	"io"
 
+	cmtproto "github.com/cometbft/cometbft/proto/tendermint/types"
+	"github.com/google/go-cmp/cmp"
+
+	"cosmossdk.io/core/appmodule"
 	"cosmossdk.io/log"
 	storetypes "cosmossdk.io/store/types"
+
+	addresscodec "github.com/cosmos/cosmos-sdk/codec/address"
 	"github.com/cosmos/cosmos-sdk/runtime"
 	"github.com/cosmos/cosmos-sdk/testutil/integration"
+	sdk "github.com/cosmos/cosmos-sdk/types"
 	moduletestutil "github.com/cosmos/cosmos-sdk/types/module/testutil"
 	"github.com/cosmos/cosmos-sdk/x/auth"
 	authkeeper "github.com/cosmos/cosmos-sdk/x/auth/keeper"
@@ -16,7 +23,6 @@ import (
 	"github.com/cosmos/cosmos-sdk/x/mint"
 	mintkeeper "github.com/cosmos/cosmos-sdk/x/mint/keeper"
 	minttypes "github.com/cosmos/cosmos-sdk/x/mint/types"
-	"github.com/google/go-cmp/cmp"
 )
 
 // Example shows how to use the integration test framework to test the integration of SDK modules.
@@ -28,11 +34,18 @@ func Example() {
 	keys := storetypes.NewKVStoreKeys(authtypes.StoreKey, minttypes.StoreKey)
 	authority := authtypes.NewModuleAddress("gov").String()
 
+	// replace the logger by testing values in a real test case (e.g. log.NewTestLogger(t))
+	logger := log.NewNopLogger()
+
+	cms := integration.CreateMultiStore(keys, logger)
+	newCtx := sdk.NewContext(cms, cmtproto.Header{}, true, logger)
+
 	accountKeeper := authkeeper.NewAccountKeeper(
 		encodingCfg.Codec,
 		runtime.NewKVStoreService(keys[authtypes.StoreKey]),
 		authtypes.ProtoBaseAccount,
 		map[string][]string{minttypes.ModuleName: {authtypes.Minter}},
+		addresscodec.NewBech32Codec("cosmos"),
 		"cosmos",
 		authority,
 	)
@@ -42,17 +55,25 @@ func Example() {
 
 	// here bankkeeper and staking keeper is nil because we are not testing them
 	// subspace is nil because we don't test params (which is legacy anyway)
-	mintKeeper := mintkeeper.NewKeeper(encodingCfg.Codec, keys[minttypes.StoreKey], nil, accountKeeper, nil, authtypes.FeeCollectorName, authority)
+	mintKeeper := mintkeeper.NewKeeper(encodingCfg.Codec, runtime.NewKVStoreService(keys[minttypes.StoreKey]), nil, accountKeeper, nil, authtypes.FeeCollectorName, authority)
 	mintModule := mint.NewAppModule(encodingCfg.Codec, mintKeeper, accountKeeper, nil, nil)
 
 	// create the application and register all the modules from the previous step
-	// replace the name and the logger by testing values in a real test case (e.g. t.Name() and log.NewTestLogger(t))
-	integrationApp := integration.NewIntegrationApp("example", log.NewLogger(io.Discard), keys, authModule, mintModule)
+	integrationApp := integration.NewIntegrationApp(
+		newCtx,
+		logger,
+		keys,
+		encodingCfg.Codec,
+		map[string]appmodule.AppModule{
+			authtypes.ModuleName: authModule,
+			minttypes.ModuleName: mintModule,
+		},
+	)
 
 	// register the message and query servers
 	authtypes.RegisterMsgServer(integrationApp.MsgServiceRouter(), authkeeper.NewMsgServerImpl(accountKeeper))
 	minttypes.RegisterMsgServer(integrationApp.MsgServiceRouter(), mintkeeper.NewMsgServerImpl(mintKeeper))
-	minttypes.RegisterQueryServer(integrationApp.QueryHelper(), mintKeeper)
+	minttypes.RegisterQueryServer(integrationApp.QueryHelper(), mintkeeper.NewQueryServerImpl(mintKeeper))
 
 	params := minttypes.DefaultParams()
 	params.BlocksPerYear = 10000
@@ -79,8 +100,14 @@ func Example() {
 		panic(err)
 	}
 
+	sdkCtx := sdk.UnwrapSDKContext(integrationApp.Context())
+
 	// we should also check the state of the application
-	got := mintKeeper.GetParams(integrationApp.SDKContext())
+	got, err := mintKeeper.Params.Get(sdkCtx)
+	if err != nil {
+		panic(err)
+	}
+
 	if diff := cmp.Diff(got, params); diff != "" {
 		panic(diff)
 	}
@@ -96,11 +123,18 @@ func Example_oneModule() {
 	keys := storetypes.NewKVStoreKeys(authtypes.StoreKey)
 	authority := authtypes.NewModuleAddress("gov").String()
 
+	// replace the logger by testing values in a real test case (e.g. log.NewTestLogger(t))
+	logger := log.NewLogger(io.Discard)
+
+	cms := integration.CreateMultiStore(keys, logger)
+	newCtx := sdk.NewContext(cms, cmtproto.Header{}, true, logger)
+
 	accountKeeper := authkeeper.NewAccountKeeper(
 		encodingCfg.Codec,
 		runtime.NewKVStoreService(keys[authtypes.StoreKey]),
 		authtypes.ProtoBaseAccount,
 		map[string][]string{minttypes.ModuleName: {authtypes.Minter}},
+		addresscodec.NewBech32Codec("cosmos"),
 		"cosmos",
 		authority,
 	)
@@ -109,8 +143,15 @@ func Example_oneModule() {
 	authModule := auth.NewAppModule(encodingCfg.Codec, accountKeeper, authsims.RandomGenesisAccounts, nil)
 
 	// create the application and register all the modules from the previous step
-	// replace the name and the logger by testing values in a real test case (e.g. t.Name() and log.NewTestLogger(t))
-	integrationApp := integration.NewIntegrationApp("example-one-module", log.NewLogger(io.Discard), keys, authModule)
+	integrationApp := integration.NewIntegrationApp(
+		newCtx,
+		logger,
+		keys,
+		encodingCfg.Codec,
+		map[string]appmodule.AppModule{
+			authtypes.ModuleName: authModule,
+		},
+	)
 
 	// register the message and query servers
 	authtypes.RegisterMsgServer(integrationApp.MsgServiceRouter(), authkeeper.NewMsgServerImpl(accountKeeper))
@@ -122,9 +163,21 @@ func Example_oneModule() {
 	result, err := integrationApp.RunMsg(&authtypes.MsgUpdateParams{
 		Authority: authority,
 		Params:    params,
-	})
+	},
+		// this allows to the begin and end blocker of the module before and after the message
+		integration.WithAutomaticFinalizeBlock(),
+		// this allows to commit the state after the message
+		integration.WithAutomaticCommit(),
+	)
 	if err != nil {
 		panic(err)
+	}
+
+	// verify that the begin and end blocker were called
+	// NOTE: in this example, we are testing auth, which doesn't have any begin or end blocker
+	// so verifying the block height is enough
+	if integrationApp.LastBlockHeight() != 2 {
+		panic(fmt.Errorf("expected block height to be 2, got %d", integrationApp.LastBlockHeight()))
 	}
 
 	// in this example the result is an empty response, a nil check is enough
@@ -140,8 +193,10 @@ func Example_oneModule() {
 		panic(err)
 	}
 
+	sdkCtx := sdk.UnwrapSDKContext(integrationApp.Context())
+
 	// we should also check the state of the application
-	got := accountKeeper.GetParams(integrationApp.SDKContext())
+	got := accountKeeper.GetParams(sdkCtx)
 	if diff := cmp.Diff(got, params); diff != "" {
 		panic(diff)
 	}

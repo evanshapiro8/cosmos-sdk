@@ -5,11 +5,14 @@ import (
 	"testing"
 	"time"
 
-	"cosmossdk.io/log"
-	"cosmossdk.io/simapp"
 	cmtcfg "github.com/cometbft/cometbft/config"
 	"github.com/cometbft/cometbft/rpc/client/http"
 	dbm "github.com/cosmos/cosmos-db"
+	"github.com/stretchr/testify/require"
+
+	"cosmossdk.io/log"
+	"cosmossdk.io/simapp"
+
 	"github.com/cosmos/cosmos-sdk/baseapp"
 	"github.com/cosmos/cosmos-sdk/codec"
 	codectypes "github.com/cosmos/cosmos-sdk/codec/types"
@@ -17,8 +20,9 @@ import (
 	"github.com/cosmos/cosmos-sdk/testutil/testnet"
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	banktypes "github.com/cosmos/cosmos-sdk/x/bank/types"
-	"github.com/stretchr/testify/require"
 )
+
+const memdb = "memdb"
 
 // A single comet server in a network runs an RPC server successfully.
 func TestCometRPC_SingleRPCServer(t *testing.T) {
@@ -55,7 +59,7 @@ func TestCometRPC_SingleRPCServer(t *testing.T) {
 		)
 
 		cfg := cmtcfg.DefaultConfig()
-		cfg.BaseConfig.DBBackend = "memdb"
+		cfg.BaseConfig.DBBackend = memdb
 
 		cs := testnet.NewCometStarter(
 			app,
@@ -72,7 +76,12 @@ func TestCometRPC_SingleRPCServer(t *testing.T) {
 
 		return cs
 	})
-	defer nodes.StopAndWait()
+	defer func() {
+		err := nodes.StopAndWait()
+		if err != nil {
+			panic(err)
+		}
+	}()
 	require.NoError(t, err)
 
 	// Once HTTP client to be shared across the following subtests.
@@ -146,7 +155,7 @@ func TestCometRPC_MultipleRPCError(t *testing.T) {
 		)
 
 		cfg := cmtcfg.DefaultConfig()
-		cfg.BaseConfig.DBBackend = "memdb"
+		cfg.BaseConfig.DBBackend = memdb
 
 		return testnet.NewCometStarter(
 			app,
@@ -156,8 +165,12 @@ func TestCometRPC_MultipleRPCError(t *testing.T) {
 			rootDir,
 		).RPCListen() // Every node has RPCListen enabled, which will cause a failure.
 	})
-	defer nodes.StopAndWait()
-
+	defer func() {
+		err := nodes.StopAndWait()
+		if err != nil {
+			panic(err)
+		}
+	}()
 	// Returned error is convertible to CometRPCInUseError.
 	// We can't test the exact value because it includes a stack trace.
 	require.Error(t, err)

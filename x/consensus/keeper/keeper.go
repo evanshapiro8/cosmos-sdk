@@ -2,19 +2,20 @@ package keeper
 
 import (
 	"context"
+	"fmt"
 
-	"cosmossdk.io/collections"
-	"cosmossdk.io/core/event"
-	storetypes "cosmossdk.io/core/store"
-	"cosmossdk.io/errors"
 	cmtproto "github.com/cometbft/cometbft/proto/tendermint/types"
 	cmttypes "github.com/cometbft/cometbft/types"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	"cosmossdk.io/collections"
+	"cosmossdk.io/core/event"
+	storetypes "cosmossdk.io/core/store"
+
 	"github.com/cosmos/cosmos-sdk/codec"
+	"github.com/cosmos/cosmos-sdk/x/consensus/exported"
 	"github.com/cosmos/cosmos-sdk/x/consensus/types"
-	govtypes "github.com/cosmos/cosmos-sdk/x/gov/types"
 )
 
 var StoreKey = "Consensus"
@@ -26,6 +27,8 @@ type Keeper struct {
 	authority   string
 	ParamsStore collections.Item[cmtproto.ConsensusParams]
 }
+
+var _ exported.ConsensusParamSetter = Keeper{}.ParamsStore
 
 func NewKeeper(cdc codec.BinaryCodec, storeService storetypes.KVStoreService, authority string, em event.Service) Keeper {
 	sb := collections.NewSchemaBuilder(storeService)
@@ -59,12 +62,12 @@ func (k Keeper) Params(ctx context.Context, _ *types.QueryParamsRequest) (*types
 
 var _ types.MsgServer = Keeper{}
 
-func (k Keeper) UpdateParams(ctx context.Context, req *types.MsgUpdateParams) (*types.MsgUpdateParamsResponse, error) {
-	if k.GetAuthority() != req.Authority {
-		return nil, errors.Wrapf(govtypes.ErrInvalidSigner, "invalid authority; expected %s, got %s", k.GetAuthority(), req.Authority)
+func (k Keeper) UpdateParams(ctx context.Context, msg *types.MsgUpdateParams) (*types.MsgUpdateParamsResponse, error) {
+	if k.GetAuthority() != msg.Authority {
+		return nil, fmt.Errorf("invalid authority; expected %s, got %s", k.GetAuthority(), msg.Authority)
 	}
 
-	consensusParams := req.ToProtoConsensusParams()
+	consensusParams := msg.ToProtoConsensusParams()
 	if err := cmttypes.ConsensusParamsFromProto(consensusParams).ValidateBasic(); err != nil {
 		return nil, err
 	}
@@ -76,7 +79,7 @@ func (k Keeper) UpdateParams(ctx context.Context, req *types.MsgUpdateParams) (*
 	if err := k.event.EventManager(ctx).EmitKV(
 		ctx,
 		"update_consensus_params",
-		event.Attribute{Key: "authority", Value: req.Authority},
+		event.Attribute{Key: "authority", Value: msg.Authority},
 		event.Attribute{Key: "parameters", Value: consensusParams.String()}); err != nil {
 		return nil, err
 	}
